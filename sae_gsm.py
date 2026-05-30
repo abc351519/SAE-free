@@ -10,7 +10,7 @@ parser = argparse.ArgumentParser()
 # 添加参数
 # parser.add_argument("--model",  type=str, required=True, help="")
 parser.add_argument("--steering", action="store_true",help="")
-
+parser.add_argument("--layer_idx", type=int, default=9, help="which layer to steer")
 parser.add_argument("--feature_idx", type=int, default=695, help="")
 parser.add_argument("--strength",type=float,default=0.5)
 parser.add_argument("--max_act",type=float, default=1)
@@ -23,12 +23,14 @@ args = parser.parse_args()
 model_map = {
     "llama3-8b":"/lzh/model/llama-3-8b-it",
     "d_llama3-8b":"/lzh/model/distill-llama3-8b",
+    # 這邊的model路徑要改，看要用本地還是用HuggleFace
     "gemma-2-9b-it":"/lzh/model/gemma-2-9b-it"
 }
 
 data_map = {
     "llama3-8b":"/lzh/cot/distill/GPU_run/gsm/gsm_300_judge.jsonl",
     "d_llama3-8b":"/lzh/cot/distill/GPU_run/gsm/d_gsm_300_judge.jsonl",
+    # 之後要改路徑，把dataset改到這個目錄裡。
     "gemma-2-9b-it":"/lzh/cot/distill/GPU_run/gsm/g_gsm_300_judge.jsonl"
 }
 
@@ -37,14 +39,21 @@ tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 model = AutoModelForCausalLM.from_pretrained(model_path,torch_dtype=torch.bfloat16,trust_remote_code=True)
 model.to("cuda")
 
+# 改成情緒推理 prompt 
 def utils_sample(sample):
-    question = sample["question"]
-    answer = sample["answer"]
-    prompt = f'''Answer the following question step by step in short and put the final answer in \\boxed{{}}. Question:{question}'''
-    # prompt = f'''Please briefly answer the following questions step by step and put the final answer in \\boxed{{}}. Question:{question}'''
-    extract_answer = answer.split('####')[-1].strip()
-
-    return {"question":prompt, "answer":extract_answer,}
+    scenario  = sample["scenario"]
+    subject   = sample["subject"]
+    choices   = sample["emotion_choices"]
+    answer    = sample["emotion_label"]
+    indexed_choices = "\n".join([f"{i}. {c}" for i, c in enumerate(choices)])
+    prompt = (
+        f"Identify the emotion of {subject} in the scenario. "
+        f"Think step by step.\n"
+        f"Scenario: {scenario}\n"
+        f"Choices:\n{indexed_choices}\n"
+        f"Answer:"
+    )
+    return {"question": prompt, "answer": answer}
 
 
 import json 
@@ -55,13 +64,14 @@ if args.steering:
     with open(data_dir,"r",encoding="utf8") as f:
         for line in f:
             selected_questions.append(json.loads(line))
-    processed_questions = selected_questions
+    processed_questions = [utils_sample(ele) for ele in selected_questions]
     # sae, cfg_dict, sparsity = SAE.from_pretrained(release = "llama_scope_r1_distill", 
     #                                           sae_id = "l15r_800m_openr1_math",
     #                                           device = "cuda")
     sae, cfg_dict, sparsity = SAE.from_pretrained(
     release = "gemma-scope-9b-it-res-canonical",
-    sae_id = "layer_9/width_16k/canonical",
+    # 有改成相對應的layer_idx
+    sae_id = f"layer_{args.layer_idx}/width_16k/canonical",
     device = "cuda"
     )
     
@@ -87,7 +97,8 @@ if args.steering:
         return hook_fn
     print("add mlp hook")
     for i, layer in enumerate(model.model.layers):
-        if i == 15:
+        # 改成情緒推理 layer，在下 command 時指定 layer_idx
+        if i == args.layer_idx:
             layer.mlp.register_forward_hook(adjust_residual_hook())
              
     acc = 0
@@ -122,7 +133,7 @@ if args.steering:
 
         
         if numbers_token==args.max_seq:
-            output_text = prompt + response + "Yeah, I think that's right.\n\n**Final Answer**\n"
+            output_text = prompt + response + "Based on the above reasoning, the emotion is:\n"
             toks = tokenizer(output_text, return_tensors="pt").to("cuda")
             with torch.no_grad():
                 output_ids = model.generate(
@@ -133,15 +144,19 @@ if args.steering:
                 )
             output_text = tokenizer.decode(output_ids[0][toks.input_ids.shape[1]:],skip_special_tokens = True)
 
-            response = response + "Yeah, I think that's right.\n\n**Final Answer**\n" + output_text
+            response = response + "Based on the above reasoning, the emotion is:\n" + output_text
             
             numbers_token = output_ids[0].shape[0]-inputs.input_ids.shape[1]
             
-        all_num+=1
-        token_num+=numbers_token
+        all_num += 1
+        token_num += numbers_token
         print("回答：", response)
         print("正确:", answer)
-        print("numbers  token", numbers_token)
+        # ↓ 在這裡加
+        if answer.lower() in response.lower():
+            acc += 1
+        print("acc so far:", acc, "/", all_num)
+        
         if args.model_name.startswith("d"):
             ele["d_final_cot"] = response
             ele["d_final_tokens"] = token_num/(i+1)
@@ -153,16 +168,18 @@ if args.steering:
             else:
                 ele["final_cot"] = response
                 ele["final_tokens"] = token_num/(i+1)
-    with open(f"./final_g_gsm_300_judge_{args.feature_idx}_{args.max_act}_{args.strength}.jsonl","w",encoding = "utf8") as fw:
+    with open(f"./emotion_steering_{args.feature_idx}_{args.layer_idx}_{args.strength}.jsonl","w",encoding = "utf8") as fw:
         for ele in processed_questions:
             fw.write(json.dumps(ele,ensure_ascii=False)+"\n")        
     
     
     print("acc",acc,"all_num",all_num,"token_num",token_num/all_num)
-    
+
+# 沒有steering
 if not args.steering:
     selected_questions = []
-    with open('./gsm_300.jsonl', 'r', encoding='utf-8') as f:
+    # 之後要改路徑，把dataset改到這個目錄裡。 找gemma對應的資料集路徑
+    with open(data_map[args.model_name], 'r', encoding='utf-8') as f:
         for line in f:
             selected_questions.append(json.loads(line))
     processed_questions = [utils_sample(ele) for ele in selected_questions]
@@ -197,7 +214,7 @@ if not args.steering:
         
         
         if numbers_token==args.max_seq:
-            output_text = prompt + response + "Yeah, I think that's right.\n\n**Final Answer**\n"
+            output_text = prompt + response + "Based on the above reasoning, the emotion is:\n"
             toks = tokenizer(output_text, return_tensors="pt").to("cuda")
             with torch.no_grad():
                 output_ids = model.generate(
@@ -208,17 +225,21 @@ if not args.steering:
                 )
             output_text = tokenizer.decode(output_ids[0][toks.input_ids.shape[1]:],skip_special_tokens = True)
 
-            response = response + "Yeah, I think that's right.\n\n**Final Answer**\n" + output_text
+            response = response + "Based on the above reasoning, the emotion is:\n" + output_text
             numbers_token = output_ids[0].shape[0]-inputs.input_ids.shape[1]
-        all_num+=1
-        token_num+=numbers_token
+        
+        all_num += 1
+        token_num += numbers_token
         print("回答：", response)
         print("正确:", answer)
-        print("numbers  token", numbers_token)
+        # 這邊有可能誤判，如果not anger 也會算成anger
+        if answer.lower() in response.lower():
+            acc += 1
+        print("acc so far:", acc, "/", all_num)
 
         ele["g_orign_cot"] = response
         ele["g_orign_tokens"] = token_num/(i+1)
-    with open("./g_gsm_300_judge.jsonl","w",encoding="utf8") as fw:
+    with open("./emotion_baseline.jsonl","w",encoding="utf8") as fw:
         for ele in processed_questions:
             fw.write(json.dumps(ele,ensure_ascii=False)+"\n")
 
