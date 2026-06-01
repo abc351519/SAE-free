@@ -1,10 +1,14 @@
 # 加载模型
+import os
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 from transformer_lens import HookedTransformer
 import argparse
 from sae_lens import SAE
 import re
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+EU_JSONL = os.path.join(SCRIPT_DIR, "data", "EU.jsonl")
 parser = argparse.ArgumentParser()
     
 # 添加参数
@@ -21,22 +25,31 @@ args = parser.parse_args()
 
 
 model_map = {
-    "llama3-8b":"/lzh/model/llama-3-8b-it",
-    "d_llama3-8b":"/lzh/model/distill-llama3-8b",
-    # 這邊的model路徑要改，看要用本地還是用HuggleFace
-    "gemma-2-9b-it":"/lzh/model/gemma-2-9b-it"
+    "llama3-8b": "meta-llama/Meta-Llama-3-8B-Instruct",
+    "d_llama3-8b": "meta-llama/Meta-Llama-3-8B-Instruct",
+    "gemma-2-9b-it": "google/gemma-2-9b-it",
 }
 
 data_map = {
-    "llama3-8b":"/lzh/cot/distill/GPU_run/gsm/gsm_300_judge.jsonl",
-    "d_llama3-8b":"/lzh/cot/distill/GPU_run/gsm/d_gsm_300_judge.jsonl",
-    # 之後要改路徑，把dataset改到這個目錄裡。
-    "gemma-2-9b-it":"/lzh/cot/distill/GPU_run/gsm/g_gsm_300_judge.jsonl"
+    "llama3-8b": EU_JSONL,
+    "d_llama3-8b": EU_JSONL,
+    "gemma-2-9b-it": EU_JSONL,
 }
 
+hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+
 model_path = model_map[args.model_name]
-tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-model = AutoModelForCausalLM.from_pretrained(model_path,torch_dtype=torch.bfloat16,trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained(
+    model_path, trust_remote_code=True, token=hf_token
+)
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    torch_dtype=torch.bfloat16,
+    trust_remote_code=True,
+    token=hf_token,
+)
 model.to("cuda")
 
 # 改成情緒推理 prompt 
@@ -178,7 +191,6 @@ if args.steering:
 # 沒有steering
 if not args.steering:
     selected_questions = []
-    # 之後要改路徑，把dataset改到這個目錄裡。 找gemma對應的資料集路徑
     with open(data_map[args.model_name], 'r', encoding='utf-8') as f:
         for line in f:
             selected_questions.append(json.loads(line))
