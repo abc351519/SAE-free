@@ -1,4 +1,4 @@
-# 原本 EU dataset 有中文資料，這邊沒有過濾，之後要過濾
+# EU.jsonl 已過濾，只跑 language=en（約 200 題）
 # 用 --layer_idx 指定 Probing 後的 layer
 # 測資位置：data/EU.jsonl（EmoBench EU split）
 # model 已改為 Hugging Face：google/gemma-2-9b-it（需 HF_TOKEN 並接受 Gemma 授權）

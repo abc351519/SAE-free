@@ -69,14 +69,23 @@ def utils_sample(sample):
     return {"question": prompt, "answer": answer}
 
 
-import json 
+import json
+
+
+def load_eu_samples(path, language="en"):
+    samples = []
+    with open(path, "r", encoding="utf8") as f:
+        for line in f:
+            row = json.loads(line)
+            if row.get("language") == language:
+                samples.append(row)
+    print(f"Loaded {len(samples)} samples (language={language}) from {path}")
+    return samples
+
 
 if args.steering:
-    selected_questions = []
     data_dir = data_map[args.model_name]
-    with open(data_dir,"r",encoding="utf8") as f:
-        for line in f:
-            selected_questions.append(json.loads(line))
+    selected_questions = load_eu_samples(data_dir, language="en")
     processed_questions = [utils_sample(ele) for ele in selected_questions]
     # sae, cfg_dict, sparsity = SAE.from_pretrained(release = "llama_scope_r1_distill", 
     #                                           sae_id = "l15r_800m_openr1_math",
@@ -190,10 +199,7 @@ if args.steering:
 
 # 沒有steering
 if not args.steering:
-    selected_questions = []
-    with open(data_map[args.model_name], 'r', encoding='utf-8') as f:
-        for line in f:
-            selected_questions.append(json.loads(line))
+    selected_questions = load_eu_samples(data_map[args.model_name], language="en")
     processed_questions = [utils_sample(ele) for ele in selected_questions]
     acc = 0
     all_num = 0
