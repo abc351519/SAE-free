@@ -6,18 +6,22 @@ from transformer_lens import HookedTransformer
 import argparse
 from sae_lens import SAE
 import re
+import csv
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 EU_JSONL = os.path.join(SCRIPT_DIR, "data", "EU.jsonl")
+LLM_CSV = os.path.join(SCRIPT_DIR, "data", "llm_test.csv")
 parser = argparse.ArgumentParser()
     
 # 添加参数
 # parser.add_argument("--model",  type=str, required=True, help="")
+parser.add_argument("--dataset", type=str, default="EU", choices=["EU", "LLM"], help="EU or LLM")
 parser.add_argument("--steering", action="store_true",help="")
 parser.add_argument("--layer_idx", type=int, default=9, help="which layer to steer")
-parser.add_argument("--feature_idx", type=int, default=695, help="")
+parser.add_argument("--feature_idx", type=int, nargs='+')
 parser.add_argument("--strength",type=float,default=0.5)
 parser.add_argument("--max_act",type=float, default=1)
+# parser.add_argument("--scaling", type=float, default=2.0)
 parser.add_argument("--max_seq",type=int,default=2000)
 parser.add_argument("--model_name",type = str, help = "d_llama3-8b, llama3-8b, gemma-9b")
 args = parser.parse_args()
@@ -30,11 +34,11 @@ model_map = {
     "gemma-2-9b-it": "google/gemma-2-9b-it",
 }
 
-data_map = {
-    "llama3-8b": EU_JSONL,
-    "d_llama3-8b": EU_JSONL,
-    "gemma-2-9b-it": EU_JSONL,
-}
+# data_map = {
+#     "llama3-8b": EU_JSONL,
+#     "d_llama3-8b": EU_JSONL,
+#     "gemma-2-9b-it": EU_JSONL,
+# }
 
 hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
 
@@ -54,19 +58,36 @@ model.to("cuda")
 
 # 改成情緒推理 prompt 
 def utils_sample(sample):
-    scenario  = sample["scenario"]
-    subject   = sample["subject"]
-    choices   = sample["emotion_choices"]
-    answer    = sample["emotion_label"]
-    indexed_choices = "\n".join([f"{i}. {c}" for i, c in enumerate(choices)])
-    prompt = (
-        f"Identify the emotion of {subject} in the scenario. "
-        f"Think step by step.\n"
-        f"Scenario: {scenario}\n"
-        f"Choices:\n{indexed_choices}\n"
-        f"Answer:"
-    )
-    return {"question": prompt, "answer": answer}
+    if args.dataset == "EU":
+        scenario  = sample["scenario"]
+        subject   = sample["subject"]
+        choices   = sample["emotion_choices"]
+        answer    = sample["emotion_label"]
+        coarse_category = sample["coarse_category"]
+        indexed_choices = "\n".join([f"{i}. {c}" for i, c in enumerate(choices)])
+        prompt = (
+            f"Identify the emotion of {subject} in the scenario. "
+            f"Think step by step.\n"
+            f"Scenario: {scenario}\n"
+            f"Choices:\n{indexed_choices}\n"
+            f"Always end with 'selected choice = ' followed by the chosen index and chosen answer.\n"
+            f"Answer:"
+        )
+        return {"question": prompt, "answer": answer, "choices": choices, "category": coarse_category}
+    else:
+        scenario  = sample["scenario"]
+        choices   = sample["emotion_choices"]
+        answer    = sample["emotion_label"]
+        indexed_choices = "\n".join([f"{i}. {c}" for i, c in enumerate(choices)])
+        prompt = (
+            f"Identify the emotion in the scenario. "
+            f"Think step by step.\n"
+            f"Scenario: {scenario}\n"
+            f"Choices:\n{indexed_choices}\n"
+            f"Always end with 'selected choice = ' followed by the chosen index and chosen answer.\n"
+            f"Answer:"
+        )
+        return {"question": prompt, "answer": answer, "choices": choices}
 
 
 import json
@@ -82,19 +103,36 @@ def load_eu_samples(path, language="en"):
     print(f"Loaded {len(samples)} samples (language={language}) from {path}")
     return samples
 
+def load_llm_samples(path):
+    samples = []
+    with open(path, "r", encoding="utf8") as f:
+        reader = csv.reader(f)
+        for i, row in enumerate(reader):
+            if i == 0:
+                continue  # Skip header
+            text, label = row[0], row[1]
+            emotion_choices = ['anger','disgust','fear','happiness','sadness','surprise']
+            samples.append({"scenario": text, "emotion_label": label, "emotion_choices": emotion_choices})
+    print(f"Loaded {len(samples)} samples from {path}")
+    return samples
+
 
 if args.steering:
-    data_dir = data_map[args.model_name]
-    selected_questions = load_eu_samples(data_dir, language="en")
+    if args.dataset == "EU":
+        data_dir = EU_JSONL
+        selected_questions = load_eu_samples(data_dir, language="en")
+    else:
+        data_dir = LLM_CSV
+        selected_questions = load_llm_samples(data_dir)
     processed_questions = [utils_sample(ele) for ele in selected_questions]
     # sae, cfg_dict, sparsity = SAE.from_pretrained(release = "llama_scope_r1_distill", 
     #                                           sae_id = "l15r_800m_openr1_math",
     #                                           device = "cuda")
     sae, cfg_dict, sparsity = SAE.from_pretrained(
-    release = "gemma-scope-9b-it-res-canonical",
-    # 有改成相對應的layer_idx
-    sae_id = f"layer_{args.layer_idx}/width_16k/canonical",
-    device = "cuda"
+        release = "gemma-scope-9b-it-res-canonical",
+        # 有改成相對應的layer_idx
+        sae_id = f"layer_{args.layer_idx}/width_16k/canonical",
+        device = "cuda"
     )
     
     
@@ -105,7 +143,12 @@ if args.steering:
             feature_activations = sae.encode(resid_float)
             reconstructed = sae.decode(feature_activations)
             error = resid_float - reconstructed
-            feature_activations[..., args.feature_idx] = args.strength * args.max_act
+            for feat_idx in args.feature_idx:
+                # feature_activations[..., feat_idx] = args.strength * args.max_act
+                feature_activations[..., feat_idx] += (args.strength * args.max_act)
+            # for feat_idx in range(feature_activations.shape[-1]):
+            #     if feat_idx not in args.feature_idx:
+            #         feature_activations[..., feat_idx] *= 0.1
             resid_hat = sae.decode(feature_activations) + error
             before_norm = torch.norm(resid_float, p=2, dim=-1, keepdim=True)
             after_norm = torch.norm(resid_hat, p=2, dim=-1, keepdim=True)
@@ -125,29 +168,33 @@ if args.steering:
              
     acc = 0
     all_num = 0
+    acc_dict = {}
+    all_num_dict = {}
     token_num = 0
     for i,ele in enumerate(processed_questions):
         prompt = ele["question"]
         answer = ele["answer"]
+        choices = ele["choices"]
+        category = ele.get("category", "N/A")
         inputs = tokenizer(prompt, return_tensors="pt")
         ids = inputs.input_ids.to("cuda")
         # 生成输出
     
         with torch.no_grad():
             outputs = model.generate(
-            ids,
-           
-            max_new_tokens=args.max_seq,          # 保守长度限制
-            # early_stopping=True,          # 检测EOS提前停止
-            repetition_penalty=1.2,
-            # temperature=0.5,
-            # top_p=0.85,
-            # do_sample=True,
-            # num_beams=1,
-            # eos_token_id=tokenizer.eos_token_id,
-            # sto÷p_sequences=["###"]
-            # logits_processor=[EarlyTerminationLogitsProcessor()],
-        )
+                ids,
+            
+                max_new_tokens=args.max_seq,          # 保守长度限制
+                # early_stopping=True,          # 检测EOS提前停止
+                repetition_penalty=1.2,
+                # temperature=0.5,
+                # top_p=0.85,
+                # do_sample=True,
+                # num_beams=1,
+                # eos_token_id=tokenizer.eos_token_id,
+                # sto÷p_sequences=["###"]
+                # logits_processor=[EarlyTerminationLogitsProcessor()],
+            )
             # 解码输出（跳过提示词部分）
         response = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
         numbers_token = outputs[0].shape[0]-inputs.input_ids.shape[1]
@@ -171,12 +218,17 @@ if args.steering:
             numbers_token = output_ids[0].shape[0]-inputs.input_ids.shape[1]
             
         all_num += 1
+        all_num_dict[category] = all_num_dict.get(category, 0) + 1
         token_num += numbers_token
         print("回答：", response)
-        print("正确:", answer)
-        # ↓ 在這裡加
-        if answer.lower() in response.lower():
+        print("正確:", answer)
+        print("選項:", " / ".join(choices))
+        print("類别:", category)
+        responce_choice = response.split("=")[-1].strip().lower()
+        # if answer.lower() in response.lower():
+        if answer.lower() in responce_choice:
             acc += 1
+            acc_dict[category] = acc_dict.get(category, 0) + 1
         print("acc so far:", acc, "/", all_num)
         
         if args.model_name.startswith("d"):
@@ -190,16 +242,25 @@ if args.steering:
             else:
                 ele["final_cot"] = response
                 ele["final_tokens"] = token_num/(i+1)
-    with open(f"./emotion_steering_{args.feature_idx}_{args.layer_idx}_{args.strength}.jsonl","w",encoding = "utf8") as fw:
+    with open(f"./emotion_steering_{args.feature_idx}_{args.layer_idx}_{args.scaling:.2f}.jsonl","w",encoding = "utf8") as fw:
         for ele in processed_questions:
             fw.write(json.dumps(ele,ensure_ascii=False)+"\n")        
     
     
     print("acc",acc,"all_num",all_num,"token_num",token_num/all_num)
+    for category in all_num_dict:
+        cat_acc = acc_dict.get(category, 0)
+        cat_total = all_num_dict[category]
+        print(f"Coarse Category: {category}, Acc: {cat_acc}/{cat_total} ({cat_acc/cat_total:.4f})")
 
 # 沒有steering
 if not args.steering:
-    selected_questions = load_eu_samples(data_map[args.model_name], language="en")
+    if args.dataset == "EU":
+        data_dir = EU_JSONL
+        selected_questions = load_eu_samples(data_dir, language="en")
+    else:
+        data_dir = LLM_CSV
+        selected_questions = load_llm_samples(data_dir)
     processed_questions = [utils_sample(ele) for ele in selected_questions]
     acc = 0
     all_num = 0
@@ -207,6 +268,7 @@ if not args.steering:
     for i,ele in enumerate(processed_questions):
         prompt = ele["question"]
         answer = ele["answer"]
+        choices = ele["choices"]
         inputs = tokenizer(prompt, return_tensors="pt")
         ids = inputs.input_ids.to("cuda")
         # 生成输出
@@ -250,6 +312,7 @@ if not args.steering:
         token_num += numbers_token
         print("回答：", response)
         print("正确:", answer)
+        print("選項:", " / ".join(choices))
         # 這邊有可能誤判，如果not anger 也會算成anger
         if answer.lower() in response.lower():
             acc += 1
