@@ -264,11 +264,14 @@ if not args.steering:
     processed_questions = [utils_sample(ele) for ele in selected_questions]
     acc = 0
     all_num = 0
+    acc_dict = {}
+    all_num_dict = {}
     token_num = 0
     for i,ele in enumerate(processed_questions):
         prompt = ele["question"]
         answer = ele["answer"]
         choices = ele["choices"]
+        category = ele.get("category", "N/A")
         inputs = tokenizer(prompt, return_tensors="pt")
         ids = inputs.input_ids.to("cuda")
         # 生成输出
@@ -309,6 +312,7 @@ if not args.steering:
             numbers_token = output_ids[0].shape[0]-inputs.input_ids.shape[1]
         
         all_num += 1
+        all_num_dict[category] = all_num_dict.get(category, 0) + 1
         token_num += numbers_token
         print("回答：", response)
         print("正确:", answer)
@@ -316,6 +320,7 @@ if not args.steering:
         # 這邊有可能誤判，如果not anger 也會算成anger
         if answer.lower() in response.lower():
             acc += 1
+            acc_dict[category] = acc_dict.get(category, 0) + 1
         print("acc so far:", acc, "/", all_num)
 
         ele["g_orign_cot"] = response
@@ -325,5 +330,7 @@ if not args.steering:
             fw.write(json.dumps(ele,ensure_ascii=False)+"\n")
 
     print("acc",acc,"all_num",all_num,"token_num",token_num/all_num)
-    
-    
+    for category in all_num_dict:
+        cat_acc = acc_dict.get(category, 0)
+        cat_total = all_num_dict[category]
+        print(f"Coarse Category: {category}, Acc: {cat_acc}/{cat_total} ({cat_acc/cat_total:.4f})")
