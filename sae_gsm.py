@@ -1,12 +1,9 @@
 # 加载模型
 import os
-from transformers import AutoTokenizer, AutoModelForCausalLM
-import torch
-from transformer_lens import HookedTransformer
 import argparse
-from sae_lens import SAE
 import re
 import csv
+from steering_config import format_steering_specs, parse_steering_specs
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 EU_JSONL = os.path.join(SCRIPT_DIR, "data", "EU.jsonl")
@@ -19,12 +16,16 @@ parser.add_argument("--dataset", type=str, default="EU", choices=["EU", "LLM"], 
 parser.add_argument("--steering", action="store_true",help="")
 parser.add_argument("--layer_idx", type=int, default=9, help="which layer to steer")
 parser.add_argument("--feature_idx", type=int, nargs='+')
+parser.add_argument("--steer", action="append", help="Repeatable LAYER:FEATURE,FEATURE spec for multi-layer steering")
 parser.add_argument("--strength",type=float,default=0.5)
 parser.add_argument("--max_act",type=float, default=1)
 # parser.add_argument("--scaling", type=float, default=2.0)
 parser.add_argument("--max_seq",type=int,default=2000)
 parser.add_argument("--model_name",type = str, help = "d_llama3-8b, llama3-8b, gemma-9b")
 args = parser.parse_args()
+
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
 
 
 
@@ -118,6 +119,13 @@ def load_llm_samples(path):
 
 
 if args.steering:
+    from sae_lens import SAE
+
+    steering_specs = parse_steering_specs(args)
+    missing_layers = [layer_idx for layer_idx in steering_specs if layer_idx >= len(model.model.layers)]
+    if missing_layers:
+        raise ValueError(f"Layer index out of range: {missing_layers}")
+
     if args.dataset == "EU":
         data_dir = EU_JSONL
         selected_questions = load_eu_samples(data_dir, language="en")
@@ -128,22 +136,25 @@ if args.steering:
     # sae, cfg_dict, sparsity = SAE.from_pretrained(release = "llama_scope_r1_distill", 
     #                                           sae_id = "l15r_800m_openr1_math",
     #                                           device = "cuda")
-    sae, cfg_dict, sparsity = SAE.from_pretrained(
-        release = "gemma-scope-9b-it-res-canonical",
-        # 有改成相對應的layer_idx
-        sae_id = f"layer_{args.layer_idx}/width_16k/canonical",
-        device = "cuda"
-    )
+    saes_by_layer = {}
+    for layer_idx in steering_specs:
+        sae, cfg_dict, sparsity = SAE.from_pretrained(
+            release = "gemma-scope-9b-it-res-canonical",
+            # 有改成相對應的layer_idx
+            sae_id = f"layer_{layer_idx}/width_16k/canonical",
+            device = "cuda"
+        )
+        saes_by_layer[layer_idx] = sae
     
     
-    def adjust_residual_hook():
+    def adjust_residual_hook(sae, feature_indices):
         def hook_fn(module, input, output):
             original_dtype = output.dtype
             resid_float = output.float()
             feature_activations = sae.encode(resid_float)
             reconstructed = sae.decode(feature_activations)
             error = resid_float - reconstructed
-            for feat_idx in args.feature_idx:
+            for feat_idx in feature_indices:
                 # feature_activations[..., feat_idx] = args.strength * args.max_act
                 feature_activations[..., feat_idx] += (args.strength * args.max_act)
                 # feature_activations[..., feat_idx] *= args.strength
@@ -164,8 +175,8 @@ if args.steering:
     print("add mlp hook")
     for i, layer in enumerate(model.model.layers):
         # 改成情緒推理 layer，在下 command 時指定 layer_idx
-        if i == args.layer_idx:
-            layer.mlp.register_forward_hook(adjust_residual_hook())
+        if i in steering_specs:
+            layer.mlp.register_forward_hook(adjust_residual_hook(saes_by_layer[i], steering_specs[i]))
              
     acc = 0
     all_num = 0
@@ -243,7 +254,8 @@ if args.steering:
             else:
                 ele["final_cot"] = response
                 ele["final_tokens"] = token_num/(i+1)
-    with open(f"./emotion_steering_{args.feature_idx}_{args.layer_idx}_{args.strength:.2f}.jsonl","w",encoding = "utf8") as fw:
+    steering_name = format_steering_specs(steering_specs)
+    with open(f"./emotion_steering_{steering_name}_{args.strength:.2f}.jsonl","w",encoding = "utf8") as fw:
         for ele in processed_questions:
             fw.write(json.dumps(ele,ensure_ascii=False)+"\n")        
     
