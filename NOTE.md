@@ -44,7 +44,40 @@ layer 20, 3967
 acc so far: 96 / 200
 acc 96 all_num 200 token_num 143.63
 
+# Scripts
 
+```shell
+python sae_gsm.py --model_name gemma-2-9b-it --steering \
+  --layer_idx 31 --feature_idx 3879 319 8831 1088 10538 3003 9189 14062 1810 8058 --strength 1.0 --dataset LLM
+
+python sae_gsm.py --model_name gemma-2-9b-it --dataset LLM
+
+# llm feature
+python sae_gsm.py --model_name gemma-2-9b-it --steering \
+  --layer_idx 31 --feature_idx 3879 319 8831 1088 10538 3003 9189 14062 1810 8058 --strength 1.0 --dataset EU
+
+# twitter feature
+python sae_gsm.py --model_name gemma-2-9b-it --steering \
+  --layer_idx 31 --feature_idx 1810 13375 12813 2027 8011 4044 1662 14062 1088 16127 --strength 1.0 --dataset EU
 
 python sae_gsm.py --model_name gemma-2-9b-it --steering \
-  --layer_idx 31 --feature_idx 12813 --strength 0.5
+  --layer_idx 20 --feature_idx 12346 7560 3967 973 3638 14555 11180 16067 10418 5245 --strength 1.0 --dataset EU
+
+python sae_gsm.py --model_name gemma-2-9b-it --steering \
+  --layer_idx 9 --feature_idx 1735 6353 248 472 7441 6386 15509 2498 5800 4409 --strength 1.0 --dataset EU
+
+python sae_gsm.py --model_name gemma-2-9b-it --steering \
+  --layer_idx 5 --feature_idx 16377 16378 16379 16380 16381 16382 16383 14590 12808 9445 --strength 1.0 --dataset EU
+
+python sae_gsm.py --model_name gemma-2-9b-it --dataset EU
+```
+
+# New Results
+
+| dataset | steering layer | acc     | acc (complex emotions) | acc (personal beliefs) | acc (emotion cues) | acc (perspective taking) |
+| ------- | -------------- | ------- | ------- | ------- | ------- | ------- |
+| LLM     | 31             | 218/250 |         |         |         |         |
+| LLM     | None           | 217/250 |         |         |         |         |
+| EU      | 9              | 95/200  | 28/49   | 26/56   | 15/28   | 26/67   |
+| EU      | 31             | 88/200  | 27/49   | 20/56   | 14/28   | 27/67   |
+| EU      | None           | 86/200  | 27/49   | 19/56   | 15/28   | 25/67   |

@@ -146,9 +146,10 @@ if args.steering:
             for feat_idx in args.feature_idx:
                 # feature_activations[..., feat_idx] = args.strength * args.max_act
                 feature_activations[..., feat_idx] += (args.strength * args.max_act)
+                # feature_activations[..., feat_idx] *= args.strength
             # for feat_idx in range(feature_activations.shape[-1]):
             #     if feat_idx not in args.feature_idx:
-            #         feature_activations[..., feat_idx] *= 0.1
+            #         feature_activations[..., feat_idx] = 0.0
             resid_hat = sae.decode(feature_activations) + error
             before_norm = torch.norm(resid_float, p=2, dim=-1, keepdim=True)
             after_norm = torch.norm(resid_hat, p=2, dim=-1, keepdim=True)
@@ -242,7 +243,7 @@ if args.steering:
             else:
                 ele["final_cot"] = response
                 ele["final_tokens"] = token_num/(i+1)
-    with open(f"./emotion_steering_{args.feature_idx}_{args.layer_idx}_{args.scaling:.2f}.jsonl","w",encoding = "utf8") as fw:
+    with open(f"./emotion_steering_{args.feature_idx}_{args.layer_idx}_{args.strength:.2f}.jsonl","w",encoding = "utf8") as fw:
         for ele in processed_questions:
             fw.write(json.dumps(ele,ensure_ascii=False)+"\n")        
     
@@ -315,10 +316,10 @@ if not args.steering:
         all_num_dict[category] = all_num_dict.get(category, 0) + 1
         token_num += numbers_token
         print("回答：", response)
-        print("正确:", answer)
+        print("正確:", answer)
         print("選項:", " / ".join(choices))
-        # 這邊有可能誤判，如果not anger 也會算成anger
-        if answer.lower() in response.lower():
+        response_choice = response.split("=")[-1].strip().lower()
+        if answer.lower() in response_choice.lower():
             acc += 1
             acc_dict[category] = acc_dict.get(category, 0) + 1
         print("acc so far:", acc, "/", all_num)
